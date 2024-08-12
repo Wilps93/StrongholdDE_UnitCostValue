@@ -70,9 +70,13 @@ namespace ChimpValue
 
         public static void ModifyMemory()
         {
+            LogMessage("ModifyMemory", "Starting memory modification...");
+
+            // Проверка и загрузка библиотеки
             if (cachedModuleBaseAddress == IntPtr.Zero)
             {
                 string dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Stronghold 1 Definitive Edition_Data\Plugins\x86_64\StrongholdDE.dll");
+                LogMessage("ModifyMemory", $"DLL path: {dllPath}");
 
                 if (!File.Exists(dllPath))
                 {
@@ -87,29 +91,55 @@ namespace ChimpValue
                     LogMessage("DLL", "Failed to load StrongholdDE.dll!");
                     return;
                 }
+                else
+                {
+                    LogMessage("DLL", $"Successfully loaded StrongholdDE.dll at address: {cachedModuleBaseAddress.ToString("X")}");
+                }
+            }
+            else
+            {
+                LogMessage("ModifyMemory", $"Using cached module base address: {cachedModuleBaseAddress.ToString("X")}");
             }
 
+            // Смещения памяти (нужно расширить, если необходимо использовать индексы от 22 до 28)
             int[] offsets = new int[]
             {
-                0x451CD0,
-                0x451CD4,
-                0x451CD8,
-                0x451CDC,
-                0x451CE0,
-                0x451CE4,
-                0x451CE8
+                0x451CD0, // Смещение для индекса 22
+                0x451CD4, // Смещение для индекса 23
+                0x451CD8, // Смещение для индекса 24
+                0x451CDC, // Смещение для индекса 25
+                0x451CE0, // Смещение для индекса 26
+                0x451CE4, // Смещение для индекса 27
+                0x451CE8  // Смещение для индекса 28
             };
+
+            LogMessage("ModifyMemory", $"Chimp values to modify: {chimpValues.Count}");
 
             foreach (var kvp in chimpValues)
             {
                 int index = kvp.Key;
-                if (index >= 0 && index < offsets.Length)
+
+                // Для отладки выводим текущий индекс и значение
+                LogMessage("ModifyMemory", $"Processing index {index} with value {kvp.Value}");
+
+                // Временное преобразование индекса
+                int adjustedIndex = index - 22; // Приведение индекса к диапазону 0-6
+
+                // Проверка, чтобы убедиться, что индекс корректен
+                if (adjustedIndex >= 0 && adjustedIndex < offsets.Length)
                 {
-                    IntPtr address = IntPtr.Add(cachedModuleBaseAddress, offsets[index]);
+                    IntPtr address = IntPtr.Add(cachedModuleBaseAddress, offsets[adjustedIndex]);
+                    LogMessage("ModifyMemory", $"Attempting to write value {kvp.Value} at memory address {address.ToString("X")}");
                     WriteMemory(Process.GetCurrentProcess().Handle, address, kvp.Value);
                     LogMessage("Memory", $"Modified value at {address.ToString("X")} to {kvp.Value}");
                 }
+                else
+                {
+                    LogMessage("ModifyMemory", $"Adjusted index {adjustedIndex} is out of bounds for the offsets array. Original index was {index}");
+                }
             }
+
+            LogMessage("ModifyMemory", "Memory modification complete.");
         }
 
         private static void WriteMemory(IntPtr processHandle, IntPtr address, int value)
@@ -143,24 +173,6 @@ namespace ChimpValue
             if (ChimpValueMod.chimpGoldCosts.TryGetValue(troopChimpType, out int cost))
             {
                 __result = cost;
-            }
-        }
-    }
-
-    [HarmonyPatch(typeof(EngineInterface), "CopyPlayStateStruct")]
-    public static class CopyPlayStateStructPatch
-    {
-        public static void Postfix(ref PlayState __result)
-        {
-            if (__result?.troop_types_available != null)
-            {
-                if (ChimpValueMod.previousTroopTypesAvailable == null || !__result.troop_types_available.SequenceEqual(ChimpValueMod.previousTroopTypesAvailable))
-                {
-                    string hexValues = string.Join(" ", __result.troop_types_available.Select(b => b.ToString("X2")));
-                    ChimpValueMod.LogMessage("TroopTypes", $"Troop Types Available (Hex): {hexValues}");
-
-                    ChimpValueMod.previousTroopTypesAvailable = (byte[])__result.troop_types_available.Clone();
-                }
             }
         }
     }
