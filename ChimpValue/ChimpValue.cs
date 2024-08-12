@@ -14,28 +14,27 @@ namespace ChimpValue
 {
     public class ChimpValueMod : MelonMod
     {
-        private static readonly Dictionary<int, int> chimpValues = new Dictionary<int, int>(); // Словарь для хранения значений, считанных из конфигурационного файла
-        private static IntPtr cachedModuleBaseAddress = IntPtr.Zero; // Кэшируем базовый адрес модуля
-        public static Dictionary<int, int> chimpGoldCosts = new Dictionary<int, int>(); // Словарь для хранения стоимости в золоте
+        public static byte[] previousTroopTypesAvailable;
+        private static readonly Dictionary<int, int> chimpValues = new Dictionary<int, int>();
+        private static IntPtr cachedModuleBaseAddress = IntPtr.Zero;
+        public static Dictionary<int, int> chimpGoldCosts = new Dictionary<int, int>();
+        private static Dictionary<string, string> lastLoggedMessages = new Dictionary<string, string>();
 
         public override void OnInitializeMelon()
         {
-            // Создаем экземпляр Harmony и патчим методы
             var harmony = new HarmonyLib.Harmony("com.yourname.memorymod");
-            harmony.PatchAll();
+            harmony.PatchAll(Assembly.GetExecutingAssembly());
         }
 
         public static void UpdateChimpValuesFromConfig(Dictionary<Enums.eChimps, int> configValues)
         {
-            chimpValues.Clear(); // Очищаем предыдущие значения
-            chimpGoldCosts.Clear(); // Очищаем предыдущие значения стоимости в золоте
+            chimpValues.Clear();
+            chimpGoldCosts.Clear();
 
-            // Заполняем словарь значениями из файла конфигурации
             foreach (var kvp in configValues)
             {
                 int index = -1;
 
-                // Используем традиционный switch для C# 7.3
                 switch (kvp.Key)
                 {
                     case Enums.eChimps.CHIMP_TYPE_ARCHER:
@@ -64,21 +63,20 @@ namespace ChimpValue
                 if (index != -1)
                 {
                     chimpValues[index] = kvp.Value;
-                    chimpGoldCosts[index] = kvp.Value; // Стоимость в золоте устанавливается равной значению из конфигурации
+                    chimpGoldCosts[index] = kvp.Value;
                 }
             }
         }
 
         public static void ModifyMemory()
         {
-            // Используем кэшированный базовый адрес модуля, если он уже был загружен
             if (cachedModuleBaseAddress == IntPtr.Zero)
             {
                 string dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Stronghold 1 Definitive Edition_Data\Plugins\x86_64\StrongholdDE.dll");
 
                 if (!File.Exists(dllPath))
                 {
-                    MelonLogger.Error($"DLL file not found at path: {dllPath}");
+                    LogMessage("DLL", $"DLL file not found at path: {dllPath}");
                     return;
                 }
 
@@ -86,24 +84,22 @@ namespace ChimpValue
 
                 if (cachedModuleBaseAddress == IntPtr.Zero)
                 {
-                    MelonLogger.Error("Failed to load StrongholdDE.dll!");
+                    LogMessage("DLL", "Failed to load StrongholdDE.dll!");
                     return;
                 }
             }
 
-            // Список смещений
             int[] offsets = new int[]
             {
-                0x451CD0, // Лучник
-                0x451CD4, // Арбалетчик
-                0x451CD8, // Копейщик
-                0x451CDC, // Пикинер
-                0x451CE0, // Пехотинец
-                0x451CE4, // Мечник
-                0x451CE8  // Рыцарь
+                0x451CD0,
+                0x451CD4,
+                0x451CD8,
+                0x451CDC,
+                0x451CE0,
+                0x451CE4,
+                0x451CE8
             };
 
-            // Изменяем значения в памяти, используя значения из конфигурационного файла
             foreach (var kvp in chimpValues)
             {
                 int index = kvp.Key;
@@ -111,7 +107,7 @@ namespace ChimpValue
                 {
                     IntPtr address = IntPtr.Add(cachedModuleBaseAddress, offsets[index]);
                     WriteMemory(Process.GetCurrentProcess().Handle, address, kvp.Value);
-                    MelonLogger.Msg($"Modified value at {address.ToString("X")} to {kvp.Value}");
+                    LogMessage("Memory", $"Modified value at {address.ToString("X")} to {kvp.Value}");
                 }
             }
         }
@@ -127,38 +123,94 @@ namespace ChimpValue
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool WriteProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int nSize, out int lpNumberOfBytesWritten);
+
+        public static void LogMessage(string context, string message)  // Добавляем контекст
+        {
+            if (!lastLoggedMessages.TryGetValue(context, out string lastMessage) || lastMessage != message)
+            {
+                MelonLogger.Msg(message);
+                lastLoggedMessages[context] = message;
+            }
+        }
     }
 
-    [HarmonyPatch(typeof(MainViewModel))]
-    [HarmonyPatch("set_BriefingMissionTitle")] // Указываем явное название метода-сеттера
-    public static class BriefingMissionTitlePatch
+    [HarmonyPatch(typeof(GameData), "getChimpGoldCost")]
+    public static class GetChimpGoldCostPatch
     {
-        private static string lastLoggedTitle = string.Empty; // Переменная для хранения последнего залогированного значения
-
-        // Метод, который будет вызываться после установки BriefingMissionTitle
         [HarmonyPostfix]
-        public static void Postfix(string value)
+        public static void Postfix(ref int __result, int troopChimpType)
         {
-            // Преобразуем значение на основе содержимого файла
-            string transformedValue = TransformValueFromFile(value);
-
-            // Логируем новое значение BriefingMissionTitle, если оно отличается от последнего залогированного и не является пустым
-            if (!string.IsNullOrEmpty(transformedValue) && transformedValue != lastLoggedTitle)
+            if (ChimpValueMod.chimpGoldCosts.TryGetValue(troopChimpType, out int cost))
             {
-                MelonLogger.Msg($"BriefingMissionTitle set to: {transformedValue}");
-                lastLoggedTitle = transformedValue; // Обновляем последнее залогированное значение
+                __result = cost;
+            }
+        }
+    }
 
-                // Используем название карты как есть
-                LoadMapConfig(transformedValue);
+    [HarmonyPatch(typeof(EngineInterface), "CopyPlayStateStruct")]
+    public static class CopyPlayStateStructPatch
+    {
+        public static void Postfix(ref PlayState __result)
+        {
+            if (__result?.troop_types_available != null)
+            {
+                if (ChimpValueMod.previousTroopTypesAvailable == null || !__result.troop_types_available.SequenceEqual(ChimpValueMod.previousTroopTypesAvailable))
+                {
+                    string hexValues = string.Join(" ", __result.troop_types_available.Select(b => b.ToString("X2")));
+                    ChimpValueMod.LogMessage("TroopTypes", $"Troop Types Available (Hex): {hexValues}");
+
+                    ChimpValueMod.previousTroopTypesAvailable = (byte[])__result.troop_types_available.Clone();
+                }
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(GameData), "setGameState")]
+    public static class Patch_SetGameState
+    {
+        private static string previousCurrentMapName;
+        private static string previousTransformedMapName;
+
+        [HarmonyPostfix]
+        public static void Postfix(GameData __instance)
+        {
+            if (__instance.currentMapName != previousCurrentMapName)
+            {
+                string mapName = __instance.currentMapName;
+                string transformedMapName = mapName;
+
+                if (IsMapNameInRussian(mapName))
+                {
+                    transformedMapName = TransformMapName(mapName);
+
+                    if (transformedMapName != mapName)
+                    {
+                        ChimpValueMod.LogMessage("MapName", $"Transformed Map Name: {transformedMapName}");
+                    }
+                }
+
+                // Проверка, если имя карты уже преобразовано и не изменилось, не выполнять дальнейшие действия
+                if (previousTransformedMapName == transformedMapName)
+                {
+                    return;
+                }
+
+                LoadMapConfig(transformedMapName);
+                previousCurrentMapName = mapName;
+                previousTransformedMapName = transformedMapName;
             }
         }
 
-        private static string TransformValueFromFile(string originalValue)
+        private static bool IsMapNameInRussian(string mapName)
+        {
+            return mapName.Any(c => c >= 'А' && c <= 'я');
+        }
+
+        private static string TransformMapName(string originalMapName)
         {
             try
             {
-                // Путь относительно корневой директории приложения
-                string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"UserData\Config\TextBrifing.txt");
+                string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"UserData\Config\MapNameTranslations.txt");
 
                 if (File.Exists(filePath))
                 {
@@ -168,32 +220,29 @@ namespace ChimpValue
                     {
                         var parts = line.Split('=');
 
-                        if (parts.Length == 2 && string.Equals(parts[0].Trim(), originalValue.Trim(), StringComparison.OrdinalIgnoreCase))
+                        if (parts.Length == 2 && string.Equals(parts[0].Trim(), originalMapName.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
-                            // Возвращаем значение после "=" игнорируя первый пробел
                             return parts[1].TrimStart();
                         }
                     }
                 }
                 else
                 {
-                    MelonLogger.Warning($"TextBrifing.txt file not found at path: {filePath}");
+                    ChimpValueMod.LogMessage("MapNameTranslation", $"MapNameTranslations.txt file not found at path: {filePath}");
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"Failed to transform value from file: {ex.Message}");
+                ChimpValueMod.LogMessage("MapNameTranslation", $"Failed to transform map name from file: {ex.Message}");
             }
 
-            // Если ничего не найдено, возвращаем оригинальное значение
-            return originalValue;
+            return originalMapName;
         }
 
         private static void LoadMapConfig(string mapName)
         {
             bool configLoaded = false;
 
-            // Единственный путь для проверки
             string directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"UserData\Config\Maps");
 
             string filePath = FindFileIgnoringCase(directory, $"{mapName}.txt");
@@ -203,30 +252,28 @@ namespace ChimpValue
                 try
                 {
                     string configContent = File.ReadAllText(filePath);
-                    MelonLogger.Msg($"Loaded config from {filePath}:\n{configContent}");
+                    ChimpValueMod.LogMessage("ConfigLoad", $"Loaded config from {filePath}:\n{configContent}");
 
                     var configValues = ParseConfigFile(configContent);
                     ChimpValueMod.UpdateChimpValuesFromConfig(configValues);
 
-                    // Применяем изменения в памяти только после загрузки конфигурации
                     ChimpValueMod.ModifyMemory();
 
                     configLoaded = true;
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Error($"Failed to load config from {filePath}: {ex.Message}");
+                    ChimpValueMod.LogMessage("ConfigLoad", $"Failed to load config from {filePath}: {ex.Message}");
                 }
             }
             else
             {
-                MelonLogger.Warning($"Config file not found for map: {mapName}");
+                ChimpValueMod.LogMessage("ConfigLoad", $"Config file not found for map: {mapName}");
             }
 
             if (!configLoaded)
             {
-                // Если конфигурация не была загружена, устанавливаем дефолтные значения
-                MelonLogger.Warning("No config file found, using default values.");
+                ChimpValueMod.LogMessage("ConfigLoad", "No config file found, using default values.");
                 SetDefaultChimpValues();
                 ChimpValueMod.ModifyMemory();
             }
@@ -235,20 +282,18 @@ namespace ChimpValue
         private static void SetDefaultChimpValues()
         {
             var defaultValues = new Dictionary<Enums.eChimps, int>
-    {
-        { Enums.eChimps.CHIMP_TYPE_ARCHER, 12 },
-        { Enums.eChimps.CHIMP_TYPE_SPEARMAN, 8 },
-        { Enums.eChimps.CHIMP_TYPE_MACEMAN, 20 },
-        { Enums.eChimps.CHIMP_TYPE_XBOWMAN, 20 },
-        { Enums.eChimps.CHIMP_TYPE_PIKEMAN, 20 },
-        { Enums.eChimps.CHIMP_TYPE_SWORDSMAN, 40 },
-        { Enums.eChimps.CHIMP_TYPE_KNIGHT, 40 }
-    };
+        {
+            { Enums.eChimps.CHIMP_TYPE_ARCHER, 12 },
+            { Enums.eChimps.CHIMP_TYPE_SPEARMAN, 8 },
+            { Enums.eChimps.CHIMP_TYPE_MACEMAN, 20 },
+            { Enums.eChimps.CHIMP_TYPE_XBOWMAN, 20 },
+            { Enums.eChimps.CHIMP_TYPE_PIKEMAN, 20 },
+            { Enums.eChimps.CHIMP_TYPE_SWORDSMAN, 40 },
+            { Enums.eChimps.CHIMP_TYPE_KNIGHT, 40 }
+        };
 
-            // Передаем словарь defaultValues в метод UpdateChimpValuesFromConfig
             ChimpValueMod.UpdateChimpValuesFromConfig(defaultValues);
 
-            // Обновляем стоимость в золоте
             ChimpValueMod.chimpGoldCosts = new Dictionary<int, int>
             {
                 [22] = 12,
@@ -270,7 +315,7 @@ namespace ChimpValue
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"Failed to search for file '{fileName}' in directory '{directory}': {ex.Message}");
+                ChimpValueMod.LogMessage("FileSearch", $"Failed to search for file '{fileName}' in directory '{directory}': {ex.Message}");
                 return null;
             }
         }
@@ -309,7 +354,7 @@ namespace ChimpValue
                             chimpEnum = Enums.eChimps.CHIMP_TYPE_KNIGHT;
                             break;
                         default:
-                            MelonLogger.Warning($"Unknown chimp type in config: {split[0]}");
+                            ChimpValueMod.LogMessage("ConfigParse", $"Unknown chimp type in config: {split[0]}");
                             continue;
                     }
 
@@ -321,21 +366,6 @@ namespace ChimpValue
             }
 
             return configValues;
-        }
-    }
-
-    // Патч для getChimpGoldCost
-    [HarmonyPatch(typeof(GameData))]
-    [HarmonyPatch("getChimpGoldCost")]
-    public static class GetChimpGoldCostPatch
-    {
-        [HarmonyPostfix]
-        public static void Postfix(ref int __result, int troopChimpType)
-        {
-            if (ChimpValueMod.chimpGoldCosts.TryGetValue(troopChimpType, out int cost))
-            {
-                __result = cost;
-            }
         }
     }
 }
